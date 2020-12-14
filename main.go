@@ -8,24 +8,33 @@ import (
 	"github.com/google/gopacket/pcap"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
 
 type ParseResult struct {
-	SrcIP string
-	DstIP string
-	SrcMac string
-	DstMac string
+	SrcIP   string
+	DstIP   string
+	SrcMac  string
+	DstMac  string
 	Service string
 	SrcPort string
 	DstPort string
 	Payload string
 }
 
-var usage string = `passivemap.exe -list
-passivemap.exe -iface <id> -packetcount <count>
-passivemap.exe -iface <id> -packetcount <count> -outfile <filename>`
+var usage string = `PassiveMap: The wire sniffing network mapper
+Flags:
+-list lists available interfaces, use id to specify interface to use
+-iface specifies interface to sniff on
+-packetcount specifies number of packets to sniff
+-scope specifies what to sniff, internal for all private subnets, all for all traffic
+-filter specifies custom network prefixes to filter by
+examples:
+passivemap.exe -list
+passivemap.exe -iface <id> -packetcount <count> -scope internal
+passivemap.exe -iface 0 -packetcount 10000 -outfile passive_cap.txt -scope internal -filter 192.168.17.,10.10.10.,172.`
 
 func main() {
 	//setup and manage cli flags
@@ -34,6 +43,8 @@ func main() {
 	ifaceFlag := flag.Int("iface", 0, "id of interface to sniff on")
 	outFileFlag := flag.String("outfile", "", "name of output file")
 	helpFlag := flag.Bool("h", false, "displays usage")
+	scopeFlag := flag.String("scope", "internal", "set report scope: internal, all")
+	filterFlag := flag.String("filter", "", "filter output by subnet prefix")
 	flag.Parse()
 	if flag.NFlag() < 1 {
 		fmt.Println(usage)
@@ -66,6 +77,24 @@ func main() {
 		log.Println(err)
 	}
 	defer handle.Close()
+	//manage filtering
+	var filter string
+	if *scopeFlag == "all" {
+		filter = "net 0.0.0.0/0"
+	} else if *scopeFlag == "internal" {
+		filter = "((src net 172.16.0.0/16 and dst net 172.16.0.0/16) or (src net 192.168.0.0/16 and dst net 192.168.0.0/16) or (src net 10.0.0.0/8 and dst net 10.0.0.0/8))"
+	} else {
+		fmt.Println(usage)
+		os.Exit(0)
+	}
+
+	err = handle.SetBPFFilter(filter)
+	if err != nil {
+		log.Println("Unable to apply filter:", err)
+		os.Exit(0)
+	}
+	fmt.Println("BPF applied:", filter)
+
 	//manage sniffing
 	pSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	var results []ParseResult
@@ -80,6 +109,11 @@ func main() {
 	}
 	combos := makeCombo(results)
 	unique := getUnique(combos)
+	if *filterFlag != "" {
+		fmt.Println("Filtering output based on provided prefixes:", *filterFlag)
+		filters := strings.Split(*filterFlag, ",")
+		unique = applyReportFilter(unique, filters)
+	}
 	if *outFileFlag == "" {
 		createCLIReport(unique)
 	} else {
@@ -118,7 +152,7 @@ func parsePacket(packet gopacket.Packet) (parseResult ParseResult) {
 	return parseResult
 }
 
-func getUnique(combos []string) (list []string){
+func getUnique(combos []string) (list []string) {
 	keys := make(map[string]bool)
 	list = []string{}
 	for _, entry := range combos {
@@ -130,7 +164,7 @@ func getUnique(combos []string) (list []string){
 	return list
 }
 
-func makeCombo(results []ParseResult) (combos []string){
+func makeCombo(results []ParseResult) (combos []string) {
 	for _, result := range results {
 		if result.DstPort != "" && result.DstIP != "" {
 			concat := result.DstIP + ":" + result.DstPort
@@ -157,7 +191,11 @@ func createCLIReport(unique []string) {
 				ports = append(ports, port[1])
 			}
 		}
-		fmt.Println(ports)
+		sort.Strings(ports)
+		for _, port := range ports {
+			fmt.Println(port)
+		}
+		fmt.Println()
 	}
 }
 
@@ -183,8 +221,21 @@ func createFileReport(unique []string, outFileFlag string) {
 				ports = append(ports, port[1])
 			}
 		}
-		outPorts := strings.Join(ports, ",")
-		outPorts = outPorts + "\n\n"
-		out.WriteString(outPorts)
+		sort.Strings(ports)
+		for _, port := range ports {
+			out.WriteString(port + "\n")
+		}
+		out.WriteString("\n")
 	}
+}
+
+func applyReportFilter(ips []string, filters []string) (filtered []string) {
+	for _, ip := range ips {
+		for _, filter := range filters {
+			if strings.HasPrefix(ip, filter) {
+				filtered = append(filtered, ip)
+			}
+		}
+	}
+	return filtered
 }

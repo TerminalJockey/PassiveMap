@@ -5,11 +5,16 @@ Picture this: you are starting your pen test, fire up your uber l33t machine, ru
 Well fear no more! With TerminalJockey's PassiveMap, you can get those sweet, sweet ports without alerting that pesky eye in the sky! Set a packet count and start profiling the network, scope out noisy targets, and silently plan your attack. As kali always reminds us, the quieter you are, the more you can hear.
 
 ___
-
-usage:
-first, list available interfaces:
+PassiveMap: The wire sniffing network mapper
+___
+Flags:
+- list lists available interfaces, use id to specify interface to use
+- iface specifies interface to sniff on 
+- packetcount specifies number of packets to sniff
+- scope specifies what to sniff, internal for all private subnets, all for all traffic 
+- filter specifies custom network prefixes to filter by
+___
+  examples:
 - passivemap.exe -list
-
-then either write results to the console or an outfile
-- passivemap.exe -iface $id -packetcount $count
-- passivemap.exe -iface $id -packetcount $count -outfile $filename
+- passivemap.exe -iface <id> -packetcount <count> -scope internal 
+- passivemap.exe -iface 0 -packetcount 10000 -outfile passive_cap.txt -scope internal -filter 192.168.17.,10.10.10.,172
