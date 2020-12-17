@@ -16,12 +16,14 @@ import (
 type ParseResult struct {
 	SrcIP   string
 	DstIP   string
+	SrcPair string
+	DstPair string
 	SrcMac  string
 	DstMac  string
 	Service string
 	SrcPort string
 	DstPort string
-	Payload string
+	Payload []byte
 }
 
 var usage string = `PassiveMap: The wire sniffing network mapper
@@ -45,6 +47,8 @@ func main() {
 	helpFlag := flag.Bool("h", false, "displays usage")
 	scopeFlag := flag.String("scope", "internal", "set report scope: internal, all")
 	filterFlag := flag.String("filter", "", "filter output by subnet prefix")
+	payloadFlag := flag.Bool("payloads", false, "enable payload processing")
+	inFileFlag := flag.String("infile", "", "optional input file, this flag disables live capture")
 	flag.Parse()
 	if flag.NFlag() < 1 {
 		fmt.Println(usage)
@@ -61,6 +65,33 @@ func main() {
 		}
 		for id, iface := range ifaces {
 			fmt.Println("id: ", id, "info: ", iface.Name, iface.Addresses)
+		}
+		os.Exit(0)
+	}
+
+	if *inFileFlag != "" {
+		handle, err := pcap.OpenOffline(*inFileFlag)
+		if err != nil {
+			log.Println(err)
+		}
+		defer handle.Close()
+		var results []ParseResult
+		pSource := gopacket.NewPacketSource(handle, handle.LinkType())
+		for packet := range pSource.Packets() {
+			results = append(results, parsePacket(packet, *payloadFlag))
+		}
+		combos := makeCombo(results)
+		unique := getUnique(combos)
+
+		if *filterFlag != "" {
+			fmt.Println("Filtering output based on provided prefixes:", *filterFlag)
+			filters := strings.Split(*filterFlag, ",")
+			unique = applyReportFilter(unique, filters)
+		}
+		if *outFileFlag == "" {
+			createCLIReport(unique, results, *payloadFlag)
+		} else {
+			createFileReport(unique, results, *outFileFlag)
 		}
 		os.Exit(0)
 	}
@@ -104,7 +135,7 @@ func main() {
 		if breakAfter > *pktCount {
 			break
 		}
-		results = append(results, parsePacket(packet))
+		results = append(results, parsePacket(packet, *payloadFlag))
 		breakAfter++
 	}
 	combos := makeCombo(results)
@@ -115,13 +146,13 @@ func main() {
 		unique = applyReportFilter(unique, filters)
 	}
 	if *outFileFlag == "" {
-		createCLIReport(unique)
+		createCLIReport(unique, results, *payloadFlag)
 	} else {
-		createFileReport(unique, *outFileFlag)
+		createFileReport(unique, results, *outFileFlag)
 	}
 }
 
-func parsePacket(packet gopacket.Packet) (parseResult ParseResult) {
+func parsePacket(packet gopacket.Packet, payloadFlag bool) (parseResult ParseResult) {
 	parseResult = ParseResult{}
 	//get MACs
 	ethLayer := packet.Layer(layers.LayerTypeEthernet)
@@ -145,10 +176,16 @@ func parsePacket(packet gopacket.Packet) (parseResult ParseResult) {
 		parseResult.DstPort = tcp.DstPort.String()
 	}
 	//get payload (experimental for service processing)
-	appLayer := packet.ApplicationLayer()
-	if appLayer != nil {
-		parseResult.Payload = string(appLayer.Payload())
+	if payloadFlag == true {
+		appLayer := packet.ApplicationLayer()
+		if appLayer != nil {
+			parseResult.Payload = appLayer.Payload()
+			//parsePayload(parseResult.Payload)
+		}
 	}
+	parseResult.SrcPair = parseResult.SrcIP + ":" + parseResult.SrcPort
+	parseResult.DstPair = parseResult.DstIP + ":" + parseResult.DstPort
+
 	return parseResult
 }
 
@@ -174,7 +211,7 @@ func makeCombo(results []ParseResult) (combos []string) {
 	return combos
 }
 
-func createCLIReport(unique []string) {
+func createCLIReport(unique []string, parseResults []ParseResult, payloadFlag bool) {
 	//get unique ips
 	var ips []string
 	for _, val := range unique {
@@ -197,9 +234,18 @@ func createCLIReport(unique []string) {
 		}
 		fmt.Println()
 	}
+	//print packet caps
+	if payloadFlag == true {
+		for _, packet := range parseResults {
+			fmt.Println("Src: ", packet.SrcPair)
+			fmt.Println("Dst: ", packet.DstPair)
+			fmt.Println("Raw: ", packet.Payload)
+			fmt.Println("Stringy: ", string(packet.Payload))
+		}
+	}
 }
 
-func createFileReport(unique []string, outFileFlag string) {
+func createFileReport(unique []string, parseResults []ParseResult, outFileFlag string) {
 	out, err := os.Create(outFileFlag)
 	if err != nil {
 		log.Println(err)
